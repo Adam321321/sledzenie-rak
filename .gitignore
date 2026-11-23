@@ -1,0 +1,11 @@
+# Środowisko Pythona
+.venv/
+__pycache__/
+*.pyc
+
+# Logi
+*.log
+
+# Archiwum BodyParts3D (143 MB) - przekracza limit 100 MB na GitHubie,
+# potrzebne tylko do ponownego przygotowania anatomia/dlon.npz
+anatomia/zrodlo/*.zip

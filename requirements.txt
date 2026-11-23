@@ -1,0 +1,8 @@
+# Wersje zapisane na sztywno: MediaPipe zmienia zachowanie między wersjami
+# (np. 1.x inaczej niż 0.10 podaje, która dłoń jest lewa).
+mediapipe==1.2.3
+PySide6-Essentials==6.12.0
+comtypes==1.5.0
+# Rentgen 3D: rysowanie na karcie graficznej i przygotowanie modelu anatomicznego
+moderngl==5.13.0
+trimesh==5.2.1
