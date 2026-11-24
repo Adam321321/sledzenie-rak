@@ -71,6 +71,39 @@ WERSJA_WIDOKOW = 2   # 2 = jest widok Anatomia (stare zapisane „rentgen” zam
 
 # --------------------------------------------------------------------------- obraz + analiza (w tle)
 
+MJPG = cv2.VideoWriter_fourcc(*"MJPG")
+
+
+def _fourcc(cap) -> str:
+    """Format, w jakim kamera faktycznie wysyła obraz (np. MJPG, YUY2, NV12)."""
+    kod = int(cap.get(cv2.CAP_PROP_FOURCC))
+    tekst = "".join(chr((kod >> 8 * i) & 0xFF) for i in range(4)).strip("\0 ")
+    return tekst if tekst.isprintable() and tekst else "?"
+
+
+def ustaw_kamere(cap, rozdzielczosci) -> None:
+    """
+    Ustawia rozdzielczość, 30 kl./s i format MJPG.
+
+    Kolejność ma znaczenie: w DirectShow zmiana rozdzielczości (i fps) restartuje kamerę i potrafi
+    przywrócić domyślny format YUY2, czyli nieskompresowany obraz. 1080p w YUY2 nie mieści się w USB 2.0
+    przy 30 kl./s, więc kamera po cichu schodzi do 5–10 kl./s. Dlatego MJPG ustawiamy na końcu,
+    przy docelowej rozdzielczości, i sprawdzamy, czy się przyjął.
+    Kamery wirtualne (np. OBS) prośbę o MJPG ignorują i zostają przy swoim formacie, to w porządku.
+    """
+    for w, h in rozdzielczosci:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        if (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) == (w, h):
+            break
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_FOURCC, MJPG)
+    if int(cap.get(cv2.CAP_PROP_FOURCC)) != MJPG:  # część sterowników przyjmuje to dopiero za drugim razem
+        cap.set(cv2.CAP_PROP_FOURCC, MJPG)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+
+
 def _klatki_na_sekunde(czasy: deque) -> float:
     return (len(czasy) - 1) / (czasy[-1] - czasy[0]) if len(czasy) > 1 and czasy[-1] > czasy[0] else 0.0
 
@@ -94,6 +127,7 @@ class WatekObrazu(QThread):
         self.przedramie = przedramie  # jw.: czy szukać łokci modelem ciała
         self._detektor_ramion: lokcie.DetektorRamion | None = None
         self._ramiona_blad = False
+        self.format_kamery = ""       # np. "MJPG" / "YUY2"; pusty dla pliku
 
     def run(self) -> None:
         try:
@@ -106,15 +140,11 @@ class WatekObrazu(QThread):
         if isinstance(self.zrodlo, int):
             cap = cv2.VideoCapture(self.zrodlo, cv2.CAP_DSHOW)
             if cap.isOpened():
-                # Kamerki USB dają wysokie rozdzielczości w 30 kl./s zwykle tylko w MJPG;
-                # kamery wirtualne (np. OBS) tę prośbę ignorują i zostają przy swoim formacie.
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-                for w, h in JAKOSCI.get(self.jakosc, JAKOSCI["auto"]):
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                    if (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) == (w, h):
-                        break
-                cap.set(cv2.CAP_PROP_FPS, 30)
+                ustaw_kamere(cap, JAKOSCI.get(self.jakosc, JAKOSCI["auto"]))
+                self.format_kamery = _fourcc(cap)
+                print(f"[kamera] „{self.nazwa}”: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}×"
+                      f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}, format {self.format_kamery}, "
+                      f"deklarowane {cap.get(cv2.CAP_PROP_FPS):.0f} kl./s", flush=True)
             return cap, None
         zdjecie = cv2.imread(self.zrodlo)
         if zdjecie is not None:
@@ -232,6 +262,7 @@ class WatekObrazu(QThread):
                     obraz = QImage(rgb0.data, w, h, rgb0.strides[0], QImage.Format.Format_RGB888).copy()
                     self.klatka.emit(obraz, wynik, {
                         "kamera_fps": _klatki_na_sekunde(wejscie),
+                        "format": self.format_kamery,
                         "fps": _klatki_na_sekunde(wyjscie),
                         "analiza_ms": sum(czasy_analizy) / len(czasy_analizy),
                         "opoznienie_ms": (koniec - t0) * 1000,
@@ -683,8 +714,12 @@ class OknoGlowne(QMainWindow):
             if s.get("ramiona_ms"):
                 dlonie_txt += f" (model ciała {s['ramiona_ms']:.0f} ms)"
         w, h = s["rozmiar"]
+        # „kamera” = ile klatek daje sama kamera, „obraz” = ile przechodzi przez analizę na ekran.
+        # Jeśli niska jest już kamera, hamulec jest w kamerze/USB/oświetleniu, nie w analizie.
+        kamera_txt = f"kamera {s['kamera_fps']:.0f} kl./s" + (f" {s['format']}" if s.get("format") else "")
         self.statystyki.setText(
-            f"{dlonie_txt}     ·     obraz {s['fps']:.0f} kl./s     ·     analiza {s['analiza_ms']:.0f} ms"
+            f"{dlonie_txt}     ·     obraz {s['fps']:.0f} kl./s ({kamera_txt})"
+            f"     ·     analiza {s['analiza_ms']:.0f} ms"
             f"     ·     opóźnienie {s['opoznienie_ms']:.0f} ms     ·     {w}×{h}")
 
     def _blad(self, tekst: str) -> None:
